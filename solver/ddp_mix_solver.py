@@ -31,7 +31,7 @@ class DDPMixSolver(object):
         print(self.val_cfg)
         os.environ['CUDA_VISIBLE_DEVICES'] = self.cfg['gpus']
         self.gpu_num = len(self.cfg['gpus'].split(','))
-        dist.init_process_group(backend='nccl')
+        # dist.init_process_group(backend='nccl')
         self.tdata = COCODataSets(img_root=self.data_cfg['train_img_root'],
                                   annotation_path=self.data_cfg['train_annotation_path'],
                                   max_thresh=self.data_cfg['max_thresh'],
@@ -114,8 +114,10 @@ class DDPMixSolver(object):
                     rpn_cls_loss = out['rpn_cls_loss']
                     rpn_box_loss = out['rpn_box_loss']
                     roi_cls_loss = out['roi_cls_loss']
+                    roi_sta_loss = out['roi_sta_loss']
                     roi_box_loss = out['roi_box_loss']
-                    loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss
+                    loss = rpn_cls_loss + rpn_box_loss
+                    loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_sta_loss + roi_box_loss
                     self.scaler.scale(loss).backward()
                     self.lr_adjuster(self.optimizer, i, epoch)
                     self.scaler.step(self.optimizer)

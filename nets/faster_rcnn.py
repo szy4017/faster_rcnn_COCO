@@ -385,7 +385,7 @@ class RPN(nn.Module):
             if len(gt) == 0:
                 match_idx = torch.full_like(anchors_all[:, 0], fill_value=Matcher.BELOW_LOW_THRESHOLD).long()
             else:
-                gt_anchor_iou = box_iou(gt[:, 1:], anchors_all)
+                gt_anchor_iou = box_iou(gt[:, 2:], anchors_all)
                 match_idx = self.proposal_matcher(gt_anchor_iou)
             positive_idx, negative_idx = self.balanced_positive_negative_sampler(match_idx)
             batch_idx.append(([idx] * len(positive_idx), [idx] * len(negative_idx)))
@@ -454,12 +454,14 @@ class FasterRCNNSimplePredictor(nn.Module):
     def __init__(self, in_channels, num_cls=80):
         super(FasterRCNNSimplePredictor, self).__init__()
         self.cls_score = nn.Linear(in_channels, num_cls + 1)
+        self.sta_score = nn.Linear(in_channels, 3 + 1)
         self.bbox_pred = nn.Linear(in_channels, 4)
 
     def forward(self, x):
         scores = self.cls_score(x)
+        sta_scores = self.sta_score(x)
         bbox_deltas = self.bbox_pred(x)
-        return scores, bbox_deltas
+        return scores, sta_scores, bbox_deltas
 
 
 class ROIHead(nn.Module):
@@ -495,6 +497,7 @@ class ROIHead(nn.Module):
         self.box_coder = BoxCoder()
         self.box_loss = IOULoss(iou_type=iou_type)
         self.ce = nn.CrossEntropyLoss()
+        self.ce_sta = nn.CrossEntropyLoss()
 
     def balanced_positive_negative_sampler(self, match_idx):
         sample_size = self.box_batch_size_per_image
@@ -514,63 +517,75 @@ class ROIHead(nn.Module):
         return pos_idx_per_image, neg_idx_per_image
 
     def select_training_samples(self, proposals, gt_boxes):
-        proposals = [torch.cat([p, g[:, 1:]]) for p, g in zip(proposals, gt_boxes)]
+        proposals = [torch.cat([p, g[:, 2:]]) for p, g in zip(proposals, gt_boxes)]
         proposals_ret = list()
         proposal_idx = list()
         for idx, p, g in zip(range(len(proposals)), proposals, gt_boxes):
             if len(g) == 0:
                 match_idx = torch.full_like(p[:, 0], fill_value=Matcher.BELOW_LOW_THRESHOLD).long()
             else:
-                gt_anchor_iou = box_iou(g[:, 1:], p)
+                gt_anchor_iou = box_iou(g[:, 2:], p)
                 match_idx = self.proposal_matcher(gt_anchor_iou)
             positive_idx, negative_idx = self.balanced_positive_negative_sampler(match_idx)
             proposal_idx.append((positive_idx, negative_idx, match_idx[positive_idx].long()))
             proposals_ret.append(p[torch.cat([positive_idx, negative_idx])])
         return proposals_ret, proposal_idx
 
-    def compute_loss(self, cls_predicts, box_predicts, proposal_idx, gt_boxes):
+    def compute_loss(self, cls_predicts, sta_predicts, box_predicts, proposal_idx, gt_boxes):
         assert proposal_idx is not None and gt_boxes is not None
         all_cls_idx = list()
+        all_sta_idx = list()
         positive_mask = list()
         target_boxes = list()
         for prop_idx, gt_box in zip(proposal_idx, gt_boxes):
             p, n, g = prop_idx
             p_cls = gt_box[g][:, 0]
+            p_sta = gt_box[g][:, 1]
             n_cls = torch.full((len(n),), -1., device=p_cls.device, dtype=p_cls.dtype)
+            n_sta = torch.full((len(n),), -1., device=p_sta.device, dtype=p_sta.dtype)
             all_cls_idx.append(p_cls)
             all_cls_idx.append(n_cls)
+            all_sta_idx.append(p_sta)
+            all_sta_idx.append(n_sta)
             mask = torch.zeros((len(p) + len(n),), device=p_cls.device).bool()
             mask[:len(p)] = True
             positive_mask.append(mask)
             target_boxes.append(gt_box[g][:, 1:])
 
         all_cls_idx = (torch.cat(all_cls_idx) + 1).long()
+        all_sta_idx = (torch.cat(all_sta_idx) + 1).long()
         positive_mask = torch.cat(positive_mask)
         target_boxes = torch.cat(target_boxes)
         box_loss = self.box_loss(box_predicts[positive_mask], target_boxes).sum() / len(target_boxes)
         cls_loss = self.ce(cls_predicts, all_cls_idx)
-        return cls_loss, box_loss
+        sta_loss = self.ce_sta(sta_predicts, all_sta_idx)
+        return cls_loss, sta_loss, box_loss
 
-    def post_process(self, cls_predicts, box_predicts, valid_size):
+    def post_process(self, cls_predicts, sta_predicts, box_predicts, valid_size):
         predicts = list()
-        for cls, box, wh in zip(cls_predicts, box_predicts, valid_size):
+        for cls, sta, box, wh in zip(cls_predicts, sta_predicts, box_predicts, valid_size):
             box[..., [0, 2]] = box[..., [0, 2]].clamp(min=0, max=wh[0])
             box[..., [1, 3]] = box[..., [1, 3]].clamp(min=0, max=wh[1])
             scores = cls.softmax(dim=-1)
+            sta_scores = sta.softmax(dim=-1)
             scores = scores[:, 1:]
+            sta_scores = sta_scores[:, 1:]
             labels = torch.arange(scores.shape[-1], device=cls.device)
             labels = labels.view(1, -1).expand_as(scores)
+            states = torch.arange(sta_scores.shape[-1], device=sta.device)
+            states = states.view(1, -1).expand_as(sta_scores)
             boxes = box.unsqueeze(1).repeat(1, scores.shape[-1], 1).reshape(-1, 4)
             scores = scores.reshape(-1)
             labels = labels.reshape(-1)
+            states = states.reshape(-1)
             inds = torch.nonzero(scores > self.box_score_thresh, as_tuple=False).squeeze(1)
-            boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
+            boxes, scores, labels, states = boxes[inds], scores[inds], labels[inds], states[inds]
             keep = ((boxes[..., 2] - boxes[..., 0]) > 1e-2) & ((boxes[..., 3] - boxes[..., 1]) > 1e-2)
-            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            boxes, scores, labels, states = boxes[keep], scores[keep], labels[keep], states[keep]
             keep = batched_nms(boxes, scores, labels, self.box_nms_thresh)
             keep = keep[:self.box_detections_per_img]
-            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
-            pred = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
+            boxes, scores, labels, states = boxes[keep], scores[keep], labels[keep], states[keep]
+            pred = torch.cat([boxes, scores[:, None], labels[:, None], states[:, None]], dim=-1)
             predicts.append(pred)
         return predicts
 
@@ -587,25 +602,28 @@ class ROIHead(nn.Module):
         hw_size = [(s[1], s[0]) for s in valid_size]
         box_features = self.roi_pooling(feature_dict, proposals, hw_size)
         box_features = self.box_head(box_features)
-        cls_predict, box_predicts = self.box_predict(box_features)
+        cls_predict, sta_predict, box_predicts = self.box_predict(box_features)
         box_predicts = self.box_coder.decoder(box_predicts, torch.cat(proposals))
         losses = dict()
         predicts = None
         if self.training:
             assert proposal_idx is not None and gt_boxes is not None
-            cls_loss, box_loss = self.compute_loss(cls_predict, box_predicts, proposal_idx, gt_boxes)
+            cls_loss, sta_loss, box_loss = self.compute_loss(cls_predict, sta_predict, box_predicts, proposal_idx, gt_boxes)
             losses['roi_cls_loss'] = cls_loss
+            losses['roi_sta_loss'] = sta_loss
             losses['roi_box_loss'] = box_loss
         else:
             if cls_predict.dtype == torch.float16:
                 cls_predict = cls_predict.float()
+            if sta_predict.dtype == torch.float16:
+                sta_predict = sta_predict.float()
             if box_predicts.dtype == torch.float16:
                 box_predicts = box_predicts.float()
 
             batch_nums = [len(p) for p in proposals]
             cls_predict = cls_predict.split(batch_nums, dim=0)
             box_predicts = box_predicts.split(batch_nums, dim=0)
-            predicts = self.post_process(cls_predict, box_predicts, valid_size)
+            predicts = self.post_process(cls_predict, sta_predict, box_predicts, valid_size)
         return predicts, losses
 
 
