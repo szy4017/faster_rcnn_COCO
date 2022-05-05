@@ -54,4 +54,4 @@ val:
   weight_path: /data/szy4017/code/faster_rcnn_COCO/weights
 
 
-gpus: '3,4'
+gpus: '1,2'

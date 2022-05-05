@@ -47,10 +47,15 @@ class BoxSimilarity(object):
         """
         box1_t = box1.T
         box2_t = box2.T
+        W, H = (768, 768)
 
         if self.coord_type == "xyxy":
             b1_x1, b1_y1, b1_x2, b1_y2 = box1_t[0], box1_t[1], box1_t[2], box1_t[3]
             b2_x1, b2_y1, b2_x2, b2_y2 = box2_t[0], box2_t[1], box2_t[2], box2_t[3]
+            b1_x1, b1_y1 = limit_box(b1_x1, b1_y1, W, H)
+            b1_x2, b1_y2 = limit_box(b1_x2, b1_y2, W, H)
+            b2_x1, b2_y1 = limit_box(b2_x1, b2_y1, W, H)
+            b2_x2, b2_y2 = limit_box(b2_x2, b2_y2, W, H)
         elif self.coord_type == "xywh":
             b1_x1, b1_x2 = box1_t[0] - box1_t[2] / 2., box1_t[0] + box1_t[2] / 2.
             b1_y1, b1_y2 = box1_t[1] - box1_t[3] / 2., box1_t[1] + box1_t[3] / 2.
@@ -78,6 +83,14 @@ class BoxSimilarity(object):
         if self.iou_type == "giou":
             c_area = cw * ch + self.eps
             giou = iou - (c_area - union_area) / c_area
+            if torch.isnan(giou).any():
+                print('from giou')
+                print(c_area)
+                import numpy as np
+                idx = np.argwhere(c_area.cpu().detach().numpy() == np.inf)
+                print(idx)
+                print(cw[idx[0, 0]])
+                print(ch[idx[0, 0]])
             return giou
 
         diagonal_dis = cw ** 2 + ch ** 2 + self.eps
@@ -110,3 +123,18 @@ class IOULoss(object):
             return -similarity.log()
         else:
             return 1 - similarity
+
+
+def limit_box(boxes_x, boxes_y, W, H):
+    for i, (box_x, box_y) in enumerate(zip(boxes_x, boxes_y)):
+        if box_x < 0:
+            boxes_x[i] = 0
+        elif box_x > W:
+            boxes_x[i] = W
+
+        if box_y < 0:
+            boxes_y[i] = 0
+        elif box_y > H:
+            boxes_y[i] = H
+
+    return boxes_x, boxes_y

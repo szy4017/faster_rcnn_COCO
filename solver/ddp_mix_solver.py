@@ -87,6 +87,7 @@ class DDPMixSolver(object):
         self.rpn_cls = AverageLogger()
         self.rpn_iou = AverageLogger()
         self.roi_cls = AverageLogger()
+        self.roi_sta = AverageLogger()
         self.roi_iou = AverageLogger()
         self.loss = AverageLogger()
 
@@ -95,6 +96,7 @@ class DDPMixSolver(object):
         self.rpn_cls.reset()
         self.rpn_iou.reset()
         self.roi_cls.reset()
+        self.roi_sta.reset()
         self.roi_iou.reset()
         self.model.train()
         if self.local_rank == 0:
@@ -102,6 +104,8 @@ class DDPMixSolver(object):
         else:
             pbar = self.tloader
         for i, (img_tensor, valid_size, targets_tensor, batch_len) in enumerate(pbar):
+            if i > 50:
+                break
             _, _, h, w = img_tensor.shape
             with torch.no_grad():
                 img_tensor = img_tensor.to(self.device)
@@ -116,7 +120,6 @@ class DDPMixSolver(object):
                     roi_cls_loss = out['roi_cls_loss']
                     roi_sta_loss = out['roi_sta_loss']
                     roi_box_loss = out['roi_box_loss']
-                    loss = rpn_cls_loss + rpn_box_loss
                     loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_sta_loss + roi_box_loss
                     self.scaler.scale(loss).backward()
                     self.lr_adjuster(self.optimizer, i, epoch)
@@ -128,8 +131,9 @@ class DDPMixSolver(object):
                 rpn_cls_loss = out['rpn_cls_loss']
                 rpn_box_loss = out['rpn_box_loss']
                 roi_cls_loss = out['roi_cls_loss']
+                roi_sta_loss = out['roi_sta_loss']
                 roi_box_loss = out['roi_box_loss']
-                loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss
+                loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_sta_loss + roi_box_loss
                 loss.backward()
                 self.lr_adjuster(self.optimizer, i, epoch)
                 self.optimizer.step()
@@ -139,8 +143,9 @@ class DDPMixSolver(object):
             self.rpn_cls.update(rpn_cls_loss.item())
             self.rpn_iou.update(rpn_box_loss.item())
             self.roi_cls.update(roi_cls_loss.item())
+            self.roi_sta.update(roi_sta_loss.item())
             self.roi_iou.update(roi_box_loss.item())
-            str_template = "epoch:{:2d}|size:{:3d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}|lr:{:8.6f}"
+            str_template = "epoch:{:2d}|size:{:3d}|loss:{:6.4f}|rpn_cls:{:6.4f}|rpn_iou:{:6.4f}|roi_cls:{:6.4f}|roi_sta:{:6.4f}|roi_iou:{:6.4f}|lr:{:8.6f}"
             if self.local_rank == 0:
                 pbar.set_description(str_template.format(
                     epoch,
@@ -149,6 +154,7 @@ class DDPMixSolver(object):
                     self.rpn_cls.avg(),
                     self.rpn_iou.avg(),
                     self.roi_cls.avg(),
+                    self.roi_sta.avg(),
                     self.roi_iou.avg(),
                     lr)
                 )
@@ -157,6 +163,7 @@ class DDPMixSolver(object):
         rpn_cls_avg = reduce_sum(torch.tensor(self.rpn_cls.avg(), device=self.device)) / self.gpu_num
         rpn_iou_avg = reduce_sum(torch.tensor(self.rpn_iou.avg(), device=self.device)) / self.gpu_num
         roi_cls_avg = reduce_sum(torch.tensor(self.roi_cls.avg(), device=self.device)) / self.gpu_num
+        roi_sta_avg = reduce_sum(torch.tensor(self.roi_sta.avg(), device=self.device)) / self.gpu_num
         roi_iou_avg = reduce_sum(torch.tensor(self.roi_iou.avg(), device=self.device)) / self.gpu_num
         if self.local_rank == 0:
             final_template = "epoch:{:2d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}"
@@ -166,13 +173,16 @@ class DDPMixSolver(object):
                 rpn_cls_avg,
                 rpn_iou_avg,
                 roi_cls_avg,
+                roi_sta_avg,
                 roi_iou_avg,
             ))
 
     @torch.no_grad()
     def val(self, epoch):
         predict_list = list()
+        predict_state_list = list()
         target_list = list()
+        target_state_list = list()
         self.model.eval()
         self.ema.ema.eval()
         if self.local_rank == 0:
@@ -184,22 +194,41 @@ class DDPMixSolver(object):
             targets_tensor = targets_tensor.to(self.device)
             predicts = self.ema.ema(img_tensor, valid_size=valid_size)
             for pred, target in zip(predicts, targets_tensor.split(batch_len)):
-                predict_list.append(pred)
-                target_list.append(target)
+                a = pred[:, 0].unsqueeze(dim=1)
+                b = pred[:, 2:]
+                c = torch.cat((a, b), dim=1)
+                predict_list.append(torch.cat((pred[:, 0], pred[:, 2:]), dim=0))
+                a = target[:, 0]
+                b = target[:, 2:]
+                target_list.append(torch.cat((target[:, 0], target[:, 2:]), dim=0))
+                predict_state_list.append(torch.cat((pred[:, 1], pred[:, 2:]), dim=0))
+                target_state_list.append(torch.cat((target[:, 1], target[:, 2:]), dim=0))
         mp, mr, map50, mean_ap = coco_map(predict_list, target_list)
         mp = reduce_sum(torch.tensor(mp, device=self.device)) / self.gpu_num
         mr = reduce_sum(torch.tensor(mr, device=self.device)) / self.gpu_num
         map50 = reduce_sum(torch.tensor(map50, device=self.device)) / self.gpu_num
         mean_ap = reduce_sum(torch.tensor(mean_ap, device=self.device)) / self.gpu_num
 
+        mp_s, mr_s, map50_s, mean_ap_s = coco_map(predict_state_list, target_state_list)
+        mp_s = reduce_sum(torch.tensor(mp_s, device=self.device)) / self.gpu_num
+        mr_s = reduce_sum(torch.tensor(mr_s, device=self.device)) / self.gpu_num
+        map50_s = reduce_sum(torch.tensor(map50_s, device=self.device)) / self.gpu_num
+        mean_ap_s = reduce_sum(torch.tensor(mean_ap_s, device=self.device)) / self.gpu_num
+
         if self.local_rank == 0:
             print("*" * 20, "eval start", "*" * 20)
-            print("epoch: {:2d}|mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map:{:6.4f}"
+            print("epoch: {:2d}|mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map:{:6.4f}\n"
                   .format(epoch + 1,
                           mp * 100,
                           mr * 100,
                           map50 * 100,
                           mean_ap * 100))
+            print("epoch: {:2d}|state mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map:{:6.4f}\n"
+                  .format(epoch + 1,
+                          mp_s * 100,
+                          mr_s * 100,
+                          map50_s * 100,
+                          mean_ap_s * 100))
             print("*" * 20, "eval end", "*" * 20)
         last_weight_path = os.path.join(self.val_cfg['weight_path'],
                                         "{:s}_{:s}_last.pth"

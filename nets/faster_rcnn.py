@@ -404,6 +404,10 @@ class RPN(nn.Module):
         all_predict_box = proposal[all_positive_batch, all_positive_anchor]
         all_gt_box = torch.cat([i[j][:, 1:] for i, j in zip(gt_boxes, gt_idx)], dim=0)
         box_loss = self.box_loss(all_predict_box, all_gt_box).sum() / len(all_gt_box)
+        if torch.isnan(box_loss):
+            print('from compute_loss')
+            print(self.box_loss(all_predict_box, all_gt_box).sum())
+            print(len(all_gt_box))
         return cls_loss, box_loss
 
     def forward(self, xs, anchors, valid_size, targets=None):
@@ -421,6 +425,8 @@ class RPN(nn.Module):
         if self.training:
             assert targets is not None
             cls_loss, box_loss = self.compute_loss(objectness, proposals, anchors_all, targets)
+            if torch.isnan(box_loss):
+                print('from forward')
             losses['rpn_cls_loss'] = cls_loss
             losses['rpn_box_loss'] = box_loss
         return boxes, losses
@@ -576,16 +582,17 @@ class ROIHead(nn.Module):
             states = states.view(1, -1).expand_as(sta_scores)
             boxes = box.unsqueeze(1).repeat(1, scores.shape[-1], 1).reshape(-1, 4)
             scores = scores.reshape(-1)
+            sta_scores = sta_scores.reshape(-1)
             labels = labels.reshape(-1)
             states = states.reshape(-1)
             inds = torch.nonzero(scores > self.box_score_thresh, as_tuple=False).squeeze(1)
-            boxes, scores, labels, states = boxes[inds], scores[inds], labels[inds], states[inds]
+            boxes, scores, labels, sta_scores, states = boxes[inds], scores[inds], labels[inds], sta_scores[inds], states[inds]
             keep = ((boxes[..., 2] - boxes[..., 0]) > 1e-2) & ((boxes[..., 3] - boxes[..., 1]) > 1e-2)
-            boxes, scores, labels, states = boxes[keep], scores[keep], labels[keep], states[keep]
+            boxes, scores, labels, sta_scores, states = boxes[keep], scores[keep], labels[keep], sta_scores[keep], states[keep]
             keep = batched_nms(boxes, scores, labels, self.box_nms_thresh)
             keep = keep[:self.box_detections_per_img]
-            boxes, scores, labels, states = boxes[keep], scores[keep], labels[keep], states[keep]
-            pred = torch.cat([boxes, scores[:, None], labels[:, None], states[:, None]], dim=-1)
+            boxes, scores, labels, sta_scores, states = boxes[keep], scores[keep], labels[keep], sta_scores[keep], states[keep]
+            pred = torch.cat([boxes, scores[:, None], labels[:, None], sta_scores[:, None], states[:, None]], dim=-1)
             predicts.append(pred)
         return predicts
 
@@ -622,6 +629,7 @@ class ROIHead(nn.Module):
 
             batch_nums = [len(p) for p in proposals]
             cls_predict = cls_predict.split(batch_nums, dim=0)
+            sta_predict = sta_predict.split(batch_nums, dim=0)
             box_predicts = box_predicts.split(batch_nums, dim=0)
             predicts = self.post_process(cls_predict, sta_predict, box_predicts, valid_size)
         return predicts, losses
