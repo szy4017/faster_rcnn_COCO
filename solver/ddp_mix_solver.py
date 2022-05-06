@@ -104,6 +104,8 @@ class DDPMixSolver(object):
         else:
             pbar = self.tloader
         for i, (img_tensor, valid_size, targets_tensor, batch_len) in enumerate(pbar):
+            # if i > 20:
+            #     break
             _, _, h, w = img_tensor.shape
             with torch.no_grad():
                 img_tensor = img_tensor.to(self.device)

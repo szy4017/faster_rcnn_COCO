@@ -135,6 +135,7 @@ def coco_map(predicts_list, targets_list):
     stats = [np.concatenate(x, 0) for x in zip(*stats)]
     if len(stats):
         p, r, ap, f1, ap_class = ap_per_class(*stats)
+        # print(ap)
         p, r, ap50, ap75, ap = p[:, 0], r[:, 0], ap[:, 0],  ap[:, 5], ap.mean(1)  # [P, R, AP@0.5, AP@0.5:0.95]
         mp, mr, map50, map75, map = p.mean(), r.mean(), ap50.mean(), ap75.mean(), ap.mean()
         return mp, mr, map50, map75, map
