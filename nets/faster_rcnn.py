@@ -291,7 +291,7 @@ class RPN(nn.Module):
                  rpn_nms_thresh=0.7,
                  rpn_batch_size_per_image=256,
                  rpn_positive_fraction=0.5,
-                 iou_type="giou"
+                 iou_type="diou"
                  ):
         super(RPN, self).__init__()
 
@@ -482,7 +482,7 @@ class ROIHead(nn.Module):
                  box_detections_per_img=100,
                  box_score_thresh=0.05,
                  box_nms_thresh=0.5,
-                 iou_type="giou"):
+                 iou_type="iou"):
         super(ROIHead, self).__init__()
         self.box_head = box_head
         self.roi_pooling = roi_pooling

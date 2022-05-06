@@ -34,7 +34,7 @@ def smooth_l1_loss(predicts, target, beta=1. / 9):
 
 
 class BoxSimilarity(object):
-    def __init__(self, iou_type="giou", coord_type="xyxy", eps=1e-9):
+    def __init__(self, iou_type="diou", coord_type="xyxy", eps=1e-9):
         self.iou_type = iou_type
         self.coord_type = coord_type
         self.eps = eps
@@ -112,7 +112,7 @@ class BoxSimilarity(object):
 
 
 class IOULoss(object):
-    def __init__(self, iou_type="giou", coord_type="xyxy"):
+    def __init__(self, iou_type="diou", coord_type="xyxy"):
         super(IOULoss, self).__init__()
         self.iou_type = iou_type
         self.box_similarity = BoxSimilarity(iou_type, coord_type)
