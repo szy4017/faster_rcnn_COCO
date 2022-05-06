@@ -8,13 +8,12 @@ cv.setNumThreads(0)
 
 
 class BoxInfo(object):
-    def __init__(self, img_path, boxes=None, labels=None, states=None, weights=None, padding_val=(103, 116, 123)):
+    def __init__(self, img_path, boxes=None, labels=None, weights=None, padding_val=(103, 116, 123)):
         super(BoxInfo, self).__init__()
         self.img_path = img_path
         self.img = None
         self.boxes = boxes
         self.labels = labels
-        self.states = states
         self.weights = weights
         self.padding_val = padding_val
 
@@ -23,8 +22,6 @@ class BoxInfo(object):
             self.boxes = np.zeros(shape=(0, 4))
         if self.labels is None:
             self.labels = np.zeros(shape=(0,))
-        if self.states is None:
-            self.states = np.zeros(shape=(0,))
         if self.weights is None:
             self.weights = np.ones(shape=(0,))
 
@@ -409,8 +406,6 @@ class RandPerspective(BasicTransform):
             box_info.boxes = xy[i]
             if box_info.labels is not None and len(box_info.labels) > 0:
                 box_info.labels = box_info.labels[i]
-            if box_info.states is not None and len(box_info.states) > 0:
-                box_info.states = box_info.states[i]
             if box_info.weights is not None and len(box_info.weights) > 0:
                 box_info.weights = box_info.weights[i]
             return box_info
@@ -485,13 +480,10 @@ class Mosaic(BasicTransform):
             np.clip(box_4, 0, 2 * self.target_size, out=box_4)
             label_4 = [item.labels for item in box_info4 if item.labels is not None]
             label_4 = np.concatenate(label_4, axis=0) if len(label_4) > 0 else None
-            state_4 = [item.states for item in box_info4 if item.states is not None]
-            state_4 = np.concatenate(state_4, axis=0) if len(state_4) > 0 else None
             weights_4 = [item.weights for item in box_info4 if item.weights is not None]
             weights_4 = np.concatenate(weights_4, axis=0) if len(weights_4) > 0 else None
             box_info.boxes = box_4
             box_info.labels = label_4
-            box_info.states = state_4
             box_info.weights = weights_4
         else:
             return self.affine(box_info)
@@ -500,8 +492,6 @@ class Mosaic(BasicTransform):
         box_info.boxes = box_info.boxes[valid_index, :]
         if box_info.labels is not None and len(box_info.labels) > 0:
             box_info.labels = box_info.labels[valid_index]
-        if box_info.states is not None and len(box_info.states) > 0:
-            box_info.states = box_info.states[valid_index]
         if box_info.weights is not None and len(box_info.weights) > 0:
             box_info.weights = box_info.weights[valid_index]
         return self.affine(box_info)
@@ -553,8 +543,6 @@ class MixUp(BasicTransform):
             box_info.boxes = np.concatenate([box_info.boxes, append_box_info.boxes], axis=0)
         if box_info.labels is not None and len(box_info.labels) > 0:
             box_info.labels = np.concatenate([box_info.labels, append_box_info.labels], axis=0)
-        if box_info.states is not None and len(box_info.states) > 0:
-            box_info.states = np.concatenate([box_info.states, append_box_info.states], axis=0)
         if box_info.weights is not None and len(box_info.weights) > 0:
             box_info.weights = np.concatenate([box_info.weights * self.mix_ratio,
                                                append_box_info.weights * (1 - self.mix_ratio)], axis=0)
@@ -608,8 +596,6 @@ class RandCrop(BasicTransform):
             box_info.boxes = cropped_boxes[i]
             if box_info.labels is not None and len(box_info.labels) > 0:
                 box_info.labels = box_info.labels[i]
-            if box_info.states is not None and len(box_info.states) > 0:
-                box_info.states = box_info.states[i]
             if box_info.weights is not None and len(box_info.weights) > 0:
                 box_info.weights = box_info.weights[i]
         return box_info
