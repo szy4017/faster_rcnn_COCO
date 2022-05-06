@@ -1,4 +1,4 @@
-# FasterRCNN
+# ATSS_RetinaNet
 This is an unofficial pytorch implementation of FasterRCNN object detection as described in [Towards Real-Time Object Detection with Region Proposal Networks](https://arxiv.org/abs/1506.01497) by Shaoqing Ren, Kaiming He, Ross Girshick, Jian Sun
 
 ## requirement
