@@ -104,8 +104,6 @@ class DDPMixSolver(object):
         else:
             pbar = self.tloader
         for i, (img_tensor, valid_size, targets_tensor, batch_len) in enumerate(pbar):
-            if i > 50:
-                break
             _, _, h, w = img_tensor.shape
             with torch.no_grad():
                 img_tensor = img_tensor.to(self.device)
@@ -194,40 +192,39 @@ class DDPMixSolver(object):
             targets_tensor = targets_tensor.to(self.device)
             predicts = self.ema.ema(img_tensor, valid_size=valid_size)
             for pred, target in zip(predicts, targets_tensor.split(batch_len)):
-                a = pred[:, 0].unsqueeze(dim=1)
-                b = pred[:, 2:]
-                c = torch.cat((a, b), dim=1)
-                predict_list.append(torch.cat((pred[:, 0], pred[:, 2:]), dim=0))
-                a = target[:, 0]
-                b = target[:, 2:]
-                target_list.append(torch.cat((target[:, 0], target[:, 2:]), dim=0))
-                predict_state_list.append(torch.cat((pred[:, 1], pred[:, 2:]), dim=0))
-                target_state_list.append(torch.cat((target[:, 1], target[:, 2:]), dim=0))
-        mp, mr, map50, mean_ap = coco_map(predict_list, target_list)
+                predict_list.append(torch.cat((pred[:, :4], pred[:, 4:6]), dim=1))
+                target_list.append(torch.cat((target[:, 0].unsqueeze(1), target[:, 2:]), dim=1))
+                predict_state_list.append(torch.cat((pred[:, :4], pred[:, 6:]), dim=1))
+                target_state_list.append(torch.cat((target[:, 1].unsqueeze(1), target[:, 2:]), dim=1))
+        mp, mr, map50, map75, mean_ap = coco_map(predict_list, target_list)
         mp = reduce_sum(torch.tensor(mp, device=self.device)) / self.gpu_num
         mr = reduce_sum(torch.tensor(mr, device=self.device)) / self.gpu_num
         map50 = reduce_sum(torch.tensor(map50, device=self.device)) / self.gpu_num
+        map75 = reduce_sum(torch.tensor(map75, device=self.device)) / self.gpu_num
         mean_ap = reduce_sum(torch.tensor(mean_ap, device=self.device)) / self.gpu_num
 
-        mp_s, mr_s, map50_s, mean_ap_s = coco_map(predict_state_list, target_state_list)
+        mp_s, mr_s, map50_s, map75_s, mean_ap_s = coco_map(predict_state_list, target_state_list)
         mp_s = reduce_sum(torch.tensor(mp_s, device=self.device)) / self.gpu_num
         mr_s = reduce_sum(torch.tensor(mr_s, device=self.device)) / self.gpu_num
         map50_s = reduce_sum(torch.tensor(map50_s, device=self.device)) / self.gpu_num
+        map75_s = reduce_sum(torch.tensor(map75_s, device=self.device)) / self.gpu_num
         mean_ap_s = reduce_sum(torch.tensor(mean_ap_s, device=self.device)) / self.gpu_num
 
         if self.local_rank == 0:
             print("*" * 20, "eval start", "*" * 20)
-            print("epoch: {:2d}|mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map:{:6.4f}\n"
+            print("epoch: {:2d}|mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map75:{:6.4f}|map:{:6.4f}\n"
                   .format(epoch + 1,
                           mp * 100,
                           mr * 100,
                           map50 * 100,
+                          map75 * 100,
                           mean_ap * 100))
-            print("epoch: {:2d}|state mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map:{:6.4f}\n"
+            print("epoch: {:2d}|state mp:{:6.4f}|mr:{:6.4f}|map50:{:6.4f}|map75:{:6.4f}|map:{:6.4f}\n"
                   .format(epoch + 1,
                           mp_s * 100,
                           mr_s * 100,
                           map50_s * 100,
+                          map75_s * 100,
                           mean_ap_s * 100))
             print("*" * 20, "eval end", "*" * 20)
         last_weight_path = os.path.join(self.val_cfg['weight_path'],
