@@ -31,7 +31,7 @@ class DDPMixSolver(object):
         print(self.val_cfg)
         os.environ['CUDA_VISIBLE_DEVICES'] = self.cfg['gpus']
         self.gpu_num = len(self.cfg['gpus'].split(','))
-        dist.init_process_group(backend='nccl')
+        # dist.init_process_group(backend='nccl')
         self.tdata = COCODataSets(img_root=self.data_cfg['train_img_root'],
                                   annotation_path=self.data_cfg['train_annotation_path'],
                                   max_thresh=self.data_cfg['max_thresh'],
@@ -184,7 +184,7 @@ class DDPMixSolver(object):
             for pred, target in zip(predicts, targets_tensor.split(batch_len)):
                 predict_list.append(pred)
                 target_list.append(target)
-        mp, mr, map50, mean_ap = coco_map(predict_list, target_list)
+        mp, mr, map50, map75, mean_ap = coco_map(predict_list, target_list)
         mp = reduce_sum(torch.tensor(mp, device=self.device)) / self.gpu_num
         mr = reduce_sum(torch.tensor(mr, device=self.device)) / self.gpu_num
         map50 = reduce_sum(torch.tensor(map50, device=self.device)) / self.gpu_num
