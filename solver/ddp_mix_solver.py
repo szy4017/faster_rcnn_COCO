@@ -102,6 +102,8 @@ class DDPMixSolver(object):
         else:
             pbar = self.tloader
         for i, (img_tensor, valid_size, targets_tensor, batch_len) in enumerate(pbar):
+            # if i > 50:
+            #     break
             _, _, h, w = img_tensor.shape
             with torch.no_grad():
                 img_tensor = img_tensor.to(self.device)
@@ -170,7 +172,7 @@ class DDPMixSolver(object):
     @torch.no_grad()
     def val(self, epoch):
         predict_list = list()
-        target_list = list()
+        cls_target_list = list()
         self.model.eval()
         self.ema.ema.eval()
         if self.local_rank == 0:
@@ -179,12 +181,13 @@ class DDPMixSolver(object):
             pbar = self.vloader
         for img_tensor, valid_size, targets_tensor, batch_len in pbar:
             img_tensor = img_tensor.to(self.device)
-            targets_tensor = targets_tensor.to(self.device)
+            cls_targets_tensor = targets_tensor[:, torch.arange(targets_tensor.size(1)) != 1]
+            cls_targets_tensor = cls_targets_tensor.to(self.device)
             predicts = self.ema.ema(img_tensor, valid_size=valid_size)
-            for pred, target in zip(predicts, targets_tensor.split(batch_len)):
+            for pred, cls_target in zip(predicts, cls_targets_tensor.split(batch_len)):
                 predict_list.append(pred)
-                target_list.append(target)
-        mp, mr, map50, map75, mean_ap = coco_map(predict_list, target_list)
+                cls_target_list.append(cls_target)
+        mp, mr, map50, map75, mean_ap = coco_map(predict_list, cls_target_list)
         mp = reduce_sum(torch.tensor(mp, device=self.device)) / self.gpu_num
         mr = reduce_sum(torch.tensor(mr, device=self.device)) / self.gpu_num
         map50 = reduce_sum(torch.tensor(map50, device=self.device)) / self.gpu_num

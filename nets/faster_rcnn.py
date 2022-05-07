@@ -674,8 +674,16 @@ class FasterRCNN(nn.Module):
         xs_resolution = sum([i.shape[-2] * i.shape[-1] for i in xs])
         if xs_resolution != anchor_num:
             self.anchors = self.anchor_generator(xs)
-        boxes, rpn_losses = self.rpn(xs, self.anchors, valid_size, targets)
-        predicts, roi_losses = self.roi_head(xs, boxes, valid_size, targets)
+        if self.training:
+            assert targets is not None
+            target = targets['target']
+            batch_len = targets['batch_len']
+            cls_target = target[:, torch.arange(target.size(1)) != 1]
+            cls_targets = {'target': cls_target, 'batch_len': batch_len}
+        else:
+            cls_targets = targets
+        boxes, rpn_losses = self.rpn(xs, self.anchors, valid_size, cls_targets)
+        predicts, roi_losses = self.roi_head(xs, boxes, valid_size, cls_targets)
         losses = {}
         losses.update(rpn_losses)
         losses.update(roi_losses)
