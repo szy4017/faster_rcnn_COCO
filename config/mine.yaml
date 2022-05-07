@@ -4,7 +4,7 @@ data:
   val_annotation_path: /data/szy4017/data/intruscapes/annotations/instances_val.json
   train_img_root: /data/szy4017/data/intruscapes/images/train
   val_img_root: /data/szy4017/data/intruscapes/images/val
-  max_thresh: 768
+  max_thresh: 1024
   use_crowd: False
   batch_size: 4
   num_workers: 2
