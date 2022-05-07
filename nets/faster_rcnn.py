@@ -553,6 +553,7 @@ class ROIHead(nn.Module):
 
     def post_process(self, cls_predicts, box_predicts, valid_size):
         predicts = list()
+        keep_list = list()
         for cls, box, wh in zip(cls_predicts, box_predicts, valid_size):
             box[..., [0, 2]] = box[..., [0, 2]].clamp(min=0, max=wh[0])
             box[..., [1, 3]] = box[..., [1, 3]].clamp(min=0, max=wh[1])
@@ -567,12 +568,13 @@ class ROIHead(nn.Module):
             boxes, scores, labels = boxes[inds], scores[inds], labels[inds]
             keep = ((boxes[..., 2] - boxes[..., 0]) > 1e-2) & ((boxes[..., 3] - boxes[..., 1]) > 1e-2)
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
-            keep = batched_nms(boxes, scores, labels, self.box_nms_thresh)
-            keep = keep[:self.box_detections_per_img]
-            boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+            kkeep = batched_nms(boxes, scores, labels, self.box_nms_thresh)
+            kkeep = kkeep[:self.box_detections_per_img]
+            boxes, scores, labels = boxes[kkeep], scores[kkeep], labels[kkeep]
             pred = torch.cat([boxes, scores[:, None], labels[:, None]], dim=-1)
             predicts.append(pred)
-        return predicts
+            keep_list.append({'inds': inds, 'keep': keep, 'kkeep': kkeep})
+        return predicts, keep_list
 
     def forward(self, feature, proposals, valid_size, targets=None):
         feature_dict = dict()
@@ -591,6 +593,7 @@ class ROIHead(nn.Module):
         box_predicts = self.box_coder.decoder(box_predicts, torch.cat(proposals))
         losses = dict()
         predicts = None
+        keep_list = list()
         if self.training:
             assert proposal_idx is not None and gt_boxes is not None
             cls_loss, box_loss = self.compute_loss(cls_predict, box_predicts, proposal_idx, gt_boxes)
@@ -605,8 +608,8 @@ class ROIHead(nn.Module):
             batch_nums = [len(p) for p in proposals]
             cls_predict = cls_predict.split(batch_nums, dim=0)
             box_predicts = box_predicts.split(batch_nums, dim=0)
-            predicts = self.post_process(cls_predict, box_predicts, valid_size)
-        return predicts, losses, proposals, proposal_idx, box_features
+            predicts, keep_list = self.post_process(cls_predict, box_predicts, valid_size)
+        return predicts, losses, proposals, proposal_idx, box_features, keep_list
 
 
 class FasterRCNNSimpleStatePredictor(nn.Module):
@@ -640,10 +643,26 @@ class STAHead(nn.Module):
         sta_loss = self.se(sta_predicts, all_sta_idx)
         return sta_loss
 
-    def post_process(self, sta_predicts):
+    def post_process(self, sta_predicts, keep_list):
         predicts = list()
+        for sta, keep in zip(sta_predicts, keep_list):
+            scores = sta.softmax(dim=-1)
+            scores = scores[:, 1:]
+            labels = torch.arange(scores.shape[-1], device=sta.device)
+            labels = labels.view(1, -1).expand_as(scores)
+            scores = scores.reshape(-1)
+            labels = labels.reshape(-1)
+            inds = keep['inds']
+            scores, labels = scores[inds], labels[inds]
+            keep_idx = keep['keep']
+            scores, labels = scores[keep_idx], labels[keep_idx]
+            kkeep_idx = keep['kkeep']
+            scores, labels = scores[kkeep_idx], labels[kkeep_idx]
+            pred = torch.cat([scores[:, None], labels[:, None]], dim=-1)
+            predicts.append(pred)
+        return predicts
 
-    def forward(self, feature, proposals, proposal_idx, targets=None):
+    def forward(self, feature, proposals, proposal_idx, keep_list, targets=None):
         gt_sta = None
         if self.training:
             assert targets is not None
@@ -661,7 +680,7 @@ class STAHead(nn.Module):
 
             batch_nums = [len(p) for p in proposals]
             sta_predicts = sta_predicts.split(batch_nums, dim=0)
-            predicts = self.post_process(sta_predicts)
+            predicts = self.post_process(sta_predicts, keep_list)
         return predicts, losses
 
 
@@ -743,8 +762,8 @@ class FasterRCNN(nn.Module):
             cls_targets = targets
             sta_targets = targets
         boxes, rpn_losses = self.rpn(xs, self.anchors, valid_size, cls_targets)
-        cls_predicts, roi_losses, proposals, proposal_idx, box_features = self.roi_head(xs, boxes, valid_size, cls_targets)
-        sta_predicts, sta_losses = self.sta_head(box_features, proposals, proposal_idx, sta_targets)
+        cls_predicts, roi_losses, proposals, proposal_idx, box_features, keep_list = self.roi_head(xs, boxes, valid_size, cls_targets)
+        sta_predicts, sta_losses = self.sta_head(box_features, proposals, proposal_idx, keep_list, sta_targets)
         losses = {}
         losses.update(rpn_losses)
         losses.update(roi_losses)
@@ -752,7 +771,7 @@ class FasterRCNN(nn.Module):
         if self.training:
             return losses
         else:
-            return predicts
+            return cls_predicts, sta_predicts
 
 
 if __name__ == '__main__':
