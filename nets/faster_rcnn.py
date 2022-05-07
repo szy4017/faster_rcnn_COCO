@@ -606,6 +606,62 @@ class ROIHead(nn.Module):
             cls_predict = cls_predict.split(batch_nums, dim=0)
             box_predicts = box_predicts.split(batch_nums, dim=0)
             predicts = self.post_process(cls_predict, box_predicts, valid_size)
+        return predicts, losses, proposals, proposal_idx, box_features
+
+
+class FasterRCNNSimpleStatePredictor(nn.Module):
+    def __init__(self, in_channels, num_sta=3):
+        super(FasterRCNNSimpleStatePredictor, self).__init__()
+        self.sta_score = nn.Linear(in_channels, num_sta + 1)
+
+    def forward(self, x):
+        scores = self.sta_score(x)
+        return scores
+
+
+class STAHead(nn.Module):
+    def __init__(self):
+        super(STAHead, self).__init__()
+        representation_size = 1024
+        self.sta_predict = FasterRCNNSimpleStatePredictor(representation_size)
+        self.se = nn.CrossEntropyLoss()
+
+    def compute_loss(self, sta_predicts, proposal_idx, gt_sta):
+        assert proposal_idx is not None and gt_sta is not None
+        all_sta_idx = list()
+        for prop_idx, gt_s in zip(proposal_idx, gt_sta):
+            p, n, g = prop_idx
+            pos_sta = gt_s[g]
+            neg_sta = torch.full((len(n),), -1., device=pos_sta.device, dtype=pos_sta.dtype)
+            all_sta_idx.append(pos_sta)
+            all_sta_idx.append(neg_sta)
+
+        all_sta_idx = (torch.cat(all_sta_idx) + 1).long()
+        sta_loss = self.se(sta_predicts, all_sta_idx)
+        return sta_loss
+
+    def post_process(self, sta_predicts):
+        predicts = list()
+
+    def forward(self, feature, proposals, proposal_idx, targets=None):
+        gt_sta = None
+        if self.training:
+            assert targets is not None
+            gt_sta = targets['target'].split(targets['batch_len'])
+        sta_predicts = self.sta_predict(feature)
+        losses = dict()
+        predicts = None
+        if self.training:
+            assert proposal_idx is not None and gt_sta is not None
+            sta_loss = self.compute_loss(sta_predicts, proposal_idx, gt_sta)
+            losses['sta_loss'] = sta_loss
+        else:
+            if sta_predicts.dtype == torch.float16:
+                sta_predicts = sta_predicts.float()
+
+            batch_nums = [len(p) for p in proposals]
+            sta_predicts = sta_predicts.split(batch_nums, dim=0)
+            predicts = self.post_process(sta_predicts)
         return predicts, losses
 
 
@@ -663,6 +719,7 @@ class FasterRCNN(nn.Module):
                                 box_score_thresh=self.cfg['box_score_thresh'],
                                 box_nms_thresh=self.cfg['box_nms_thresh'],
                                 )
+        self.sta_head = STAHead()
 
     def forward(self, x, valid_size, targets=None):
         if self.anchors:
@@ -680,13 +737,18 @@ class FasterRCNN(nn.Module):
             batch_len = targets['batch_len']
             cls_target = target[:, torch.arange(target.size(1)) != 1]
             cls_targets = {'target': cls_target, 'batch_len': batch_len}
+            sta_target = target[:, 1]
+            sta_targets = {'target': sta_target, 'batch_len': batch_len}
         else:
             cls_targets = targets
+            sta_targets = targets
         boxes, rpn_losses = self.rpn(xs, self.anchors, valid_size, cls_targets)
-        predicts, roi_losses = self.roi_head(xs, boxes, valid_size, cls_targets)
+        cls_predicts, roi_losses, proposals, proposal_idx, box_features = self.roi_head(xs, boxes, valid_size, cls_targets)
+        sta_predicts, sta_losses = self.sta_head(box_features, proposals, proposal_idx, sta_targets)
         losses = {}
         losses.update(rpn_losses)
         losses.update(roi_losses)
+        losses.update(sta_losses)
         if self.training:
             return losses
         else:

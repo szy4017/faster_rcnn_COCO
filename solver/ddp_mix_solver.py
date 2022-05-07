@@ -88,6 +88,7 @@ class DDPMixSolver(object):
         self.rpn_iou = AverageLogger()
         self.roi_cls = AverageLogger()
         self.roi_iou = AverageLogger()
+        self.sta_loss = AverageLogger()
         self.loss = AverageLogger()
 
     def train(self, epoch):
@@ -117,7 +118,8 @@ class DDPMixSolver(object):
                     rpn_box_loss = out['rpn_box_loss']
                     roi_cls_loss = out['roi_cls_loss']
                     roi_box_loss = out['roi_box_loss']
-                    loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss
+                    sta_loss = out['sta_loss']
+                    loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss + sta_loss
                     self.scaler.scale(loss).backward()
                     self.lr_adjuster(self.optimizer, i, epoch)
                     self.scaler.step(self.optimizer)
@@ -129,7 +131,8 @@ class DDPMixSolver(object):
                 rpn_box_loss = out['rpn_box_loss']
                 roi_cls_loss = out['roi_cls_loss']
                 roi_box_loss = out['roi_box_loss']
-                loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss
+                sta_loss = out['sta_loss']
+                loss = rpn_cls_loss + rpn_box_loss + roi_cls_loss + roi_box_loss + sta_loss
                 loss.backward()
                 self.lr_adjuster(self.optimizer, i, epoch)
                 self.optimizer.step()
@@ -140,7 +143,8 @@ class DDPMixSolver(object):
             self.rpn_iou.update(rpn_box_loss.item())
             self.roi_cls.update(roi_cls_loss.item())
             self.roi_iou.update(roi_box_loss.item())
-            str_template = "epoch:{:2d}|size:{:3d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}|lr:{:8.6f}"
+            self.sta_loss.update(sta_loss.item())
+            str_template = "epoch:{:2d}|size:{:3d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}|sta:{:6.4f}|lr:{:8.6f}"
             if self.local_rank == 0:
                 pbar.set_description(str_template.format(
                     epoch,
@@ -150,6 +154,7 @@ class DDPMixSolver(object):
                     self.rpn_iou.avg(),
                     self.roi_cls.avg(),
                     self.roi_iou.avg(),
+                    self.sta_loss.avg(),
                     lr)
                 )
         self.ema.update_attr(self.model)
@@ -158,8 +163,9 @@ class DDPMixSolver(object):
         rpn_iou_avg = reduce_sum(torch.tensor(self.rpn_iou.avg(), device=self.device)) / self.gpu_num
         roi_cls_avg = reduce_sum(torch.tensor(self.roi_cls.avg(), device=self.device)) / self.gpu_num
         roi_iou_avg = reduce_sum(torch.tensor(self.roi_iou.avg(), device=self.device)) / self.gpu_num
+        sta_loss_avg = reduce_sum(torch.tensor(self.sta_loss.avg(), device=self.device)) / self.gpu_num
         if self.local_rank == 0:
-            final_template = "epoch:{:2d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}"
+            final_template = "epoch:{:2d}|loss:{:6.4f}|pcls:{:6.4f}|piou:{:6.4f}|ocls:{:6.4f}|oiou:{:6.4f}|sta:{:6.4f}"
             print(final_template.format(
                 epoch,
                 loss_avg,
@@ -167,6 +173,7 @@ class DDPMixSolver(object):
                 rpn_iou_avg,
                 roi_cls_avg,
                 roi_iou_avg,
+                sta_loss_avg,
             ))
 
     @torch.no_grad()
